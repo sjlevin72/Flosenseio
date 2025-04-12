@@ -9,16 +9,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { BellIcon, Settings, LogOut } from "lucide-react";
+import { BellIcon, Settings, LogOut, Droplet } from "lucide-react";
 
 export default function Header() {
   return (
     <header className="bg-white shadow-sm">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
         <div className="flex items-center space-x-2">
-          <span className="material-icons text-primary text-2xl">water_drop</span>
+          <Droplet className="h-6 w-6 text-primary fill-primary" />
           <Link href="/">
-            <h1 className="text-xl font-semibold text-neutral-900 cursor-pointer">WaterFlow Analytics</h1>
+            <h1 className="text-xl font-semibold cursor-pointer">
+              <span className="text-primary">Flo</span><span className="text-neutral-900">sense.io</span>
+            </h1>
           </Link>
         </div>
         <div className="flex items-center space-x-4">

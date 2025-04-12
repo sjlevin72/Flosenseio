@@ -7,7 +7,7 @@ export default function Footer() {
     <footer className="bg-white border-t border-neutral-200">
       <div className="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center">
         <div className="text-neutral-500 text-sm mb-2 sm:mb-0">
-          © {currentYear} WaterFlow Analytics. All rights reserved.
+          © {currentYear} <span className="text-primary font-medium">Flo</span><span className="font-medium">sense.io</span>. All rights reserved.
         </div>
         <div className="flex space-x-6">
           <Link href="#privacy">

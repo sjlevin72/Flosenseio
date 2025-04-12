@@ -26,7 +26,9 @@ export default function Dashboard() {
     <div>
       <div className="mb-8">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
-          <h2 className="text-2xl font-semibold text-neutral-900 mb-2 sm:mb-0">Water Usage Dashboard</h2>
+          <h2 className="text-2xl font-semibold mb-2 sm:mb-0">
+            <span className="text-primary">Flo</span><span className="text-neutral-900">sense</span> Water Usage Dashboard
+          </h2>
           
           {/* Time Range Selector */}
           <div className="flex items-center space-x-2 bg-white p-1 rounded-lg shadow-sm">
