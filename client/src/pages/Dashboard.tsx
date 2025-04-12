@@ -3,11 +3,13 @@ import UsageSummaryCards from "@/components/dashboard/UsageSummaryCards";
 import FlowProfileChart from "@/components/dashboard/FlowProfileChart";
 import UsageBreakdown from "@/components/dashboard/UsageBreakdown";
 import RecommendationsCard from "@/components/dashboard/RecommendationsCard";
+import AnomalyDetectionCard from "@/components/dashboard/AnomalyDetectionCard";
 import EventsList from "@/components/events/EventsList";
 import { useQuery } from "@tanstack/react-query";
 import { useWaterData } from "@/hooks/useWaterData";
 import { Button } from "@/components/ui/button";
 import { CalendarIcon } from "lucide-react";
+import { WaterUsageData } from "@/types/water";
 
 type TimeRange = "day" | "week" | "month" | "custom";
 
@@ -15,8 +17,9 @@ export default function Dashboard() {
   const [timeRange, setTimeRange] = useState<TimeRange>("week");
   const { getFilteredData } = useWaterData();
   
-  const { data: waterData, isLoading } = useQuery({
+  const { data: waterData, isLoading } = useQuery<WaterUsageData, Error>({
     queryKey: ['/api/water/usage', timeRange],
+    select: (data) => data as WaterUsageData,
   });
 
   return (
@@ -71,8 +74,9 @@ export default function Dashboard() {
           <div className="lg:col-span-2">
             <UsageBreakdown timeRange={timeRange} isLoading={isLoading} data={waterData} />
           </div>
-          <div>
+          <div className="space-y-6">
             <RecommendationsCard isLoading={isLoading} data={waterData} />
+            <AnomalyDetectionCard isLoading={isLoading} data={waterData} />
           </div>
         </div>
 
