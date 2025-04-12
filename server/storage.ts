@@ -227,7 +227,11 @@ export class MemStorage implements IStorage {
   
   async createUser(userData: { username: string, password: string }): Promise<User> {
     const id = this.currentIds.user++;
-    const user: User = { id, ...userData };
+    const user: User = { 
+      id, 
+      ...userData,
+      createdAt: new Date()
+    };
     this.users.set(id, user);
     return user;
   }
@@ -409,6 +413,7 @@ export class MemStorage implements IStorage {
       // Create event
       this.activeEvent = { id: this.currentIds.event, startTime };
       await this.completeWaterEvent({
+        userId: 1, // Default user
         startTime,
         endTime,
         duration: template.duration,
@@ -418,6 +423,7 @@ export class MemStorage implements IStorage {
         category: template.category,
         confidence: 90 + Math.floor(Math.random() * 10),
         anomaly: false,
+        anomalyDescription: null,
         flowData
       });
     }
@@ -442,6 +448,7 @@ export class MemStorage implements IStorage {
     
     this.activeEvent = { id: this.currentIds.event, startTime: leakStartTime };
     await this.completeWaterEvent({
+      userId: 1, // Default user
       startTime: leakStartTime,
       endTime: leakEndTime,
       duration: 3 * 60 * 60, // 3 hours
@@ -559,10 +566,13 @@ export class DatabaseStorage implements IStorage {
       throw new Error("No active water event to complete");
     }
     
+    // Extract and use the userId from event, or default to this.defaultUserId
+    const { userId = this.defaultUserId, ...eventData } = event;
+    
     const [newEvent] = await db.insert(waterEvents)
       .values({
-        userId: this.defaultUserId,
-        ...event
+        userId,
+        ...eventData
       })
       .returning();
     
@@ -703,8 +713,15 @@ export class DatabaseStorage implements IStorage {
     // Check if we already have data
     const existingReadings = await this.getWaterReadings();
     if (existingReadings.length > 0) {
-      console.log("Database already contains readings, skipping seed");
-      return;
+      // Check if we have events, if not generate them even if we have readings
+      const existingEvents = await this.getWaterEvents();
+      if (existingEvents.length > 0) {
+        console.log("Database already contains readings and events, skipping seed");
+        return;
+      } else {
+        console.log("Database contains readings but no events, generating events...");
+        // Proceed to generate events from existing readings
+      }
     }
     
     // Same seeding logic as before, but with this.defaultUserId
@@ -835,6 +852,7 @@ export class DatabaseStorage implements IStorage {
         category: template.category,
         confidence: 90 + Math.floor(Math.random() * 10),
         anomaly: false,
+        anomalyDescription: null,
         flowData
       });
     }
