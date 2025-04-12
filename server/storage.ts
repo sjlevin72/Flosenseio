@@ -566,18 +566,30 @@ export class DatabaseStorage implements IStorage {
       throw new Error("No active water event to complete");
     }
     
-    // Extract and use the userId from event, or default to this.defaultUserId
-    const { userId = this.defaultUserId, ...eventData } = event;
-    
-    const [newEvent] = await db.insert(waterEvents)
-      .values({
-        userId,
-        ...eventData
-      })
-      .returning();
-    
-    this.activeEvent = null;
-    return newEvent;
+    try {
+      console.log("Completing water event with data:", JSON.stringify({
+        activeEvent: this.activeEvent,
+        eventData: event
+      }, null, 2));
+      
+      // Extract and use the userId from event, or default to this.defaultUserId
+      const { userId = this.defaultUserId, ...eventData } = event;
+      
+      const [newEvent] = await db.insert(waterEvents)
+        .values({
+          userId,
+          ...eventData
+        })
+        .returning();
+      
+      console.log("Successfully created event:", newEvent?.id);
+      this.activeEvent = null;
+      return newEvent;
+    } catch (error: any) {
+      console.error("Error completing water event:", error);
+      console.error("Error details:", error.stack);
+      throw error;
+    }
   }
   
   async cancelActiveWaterEvent(): Promise<void> {
@@ -935,7 +947,7 @@ export const storage = new DatabaseStorage();
     }
     
     console.log("Database seeded successfully");
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error seeding database:", error);
     console.error(error.stack);
   }
