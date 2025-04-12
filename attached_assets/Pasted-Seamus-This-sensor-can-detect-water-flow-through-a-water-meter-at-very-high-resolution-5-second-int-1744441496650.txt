@@ -1,0 +1,22 @@
+Seamus
+This sensor can detect water flow through a water meter at very high resolution (5 second intervals and 67ml volume packets). This allows us to generate a flow profile, isolate a water use event and categorise the water use event (e.g. faucet, shower, washing machine, dishwasher, etc.). This flow profile should be viewable in a front end on a time series graph, where the time can be modified by the user. An additional feature is that all water use should be categorised and mapped for the previous 7 days (see image for an example of what that dashboard would look like). As this is tracking water use, it also requires a recommendations feature that will provide recommendations based off the breakdown of water use by that specific customer. Build these and any other recommended features. The database currently is an excel spreadsheet
+
+
+Gemini
+OK, here's a plan for how we'll prototype this app. Take a look below and customize as needed, or if you're ready, select Prototype this App.
+
+App Blueprint
+Flow Profile Visualization — Display a time series graph of water flow data, with user-adjustable time scales and views, sourced directly from the sensor data.
+Water Use Categorization — Categorize water usage events (e.g., faucet, shower, washing machine) using AI, and display a breakdown of water usage by category over the previous 7 days. The AI tool will have reasoning capabilities to determine if the event is part of a larger chain of events.
+Personalized Recommendations — Provide personalized recommendations for water conservation based on the user's water usage patterns using an AI tool.
+Data Storage — Securely store water usage data from the sensor in Firestore.
+API Endpoint — Implement a RESTful API to receive data from the sensor and store it in the database.
+Color
+Layout
+Clean and intuitive layout for easy navigation and data interpretation.
+Typography
+Clear and readable typography for graph labels, data tables, and recommendations.
+Iconography
+Use water-related icons to represent different categories of water usage.
+Animation
+Subtle animations for graph updates and data loading.
