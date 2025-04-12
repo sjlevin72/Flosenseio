@@ -899,9 +899,44 @@ export const storage = new DatabaseStorage();
 // Seed sample data for demonstration
 (async () => {
   try {
+    console.log("Starting to seed database...");
     await storage.seedSampleData();
+    
+    // Double check if events were created
+    const events = await storage.getWaterEvents();
+    console.log(`After seeding, found ${events.length} events`);
+    
+    if (events.length === 0) {
+      console.log("No events were created during seeding. Attempting to create events manually...");
+      
+      // Manually create a test event
+      const now = new Date();
+      const startTime = new Date(now);
+      startTime.setHours(now.getHours() - 1);
+      
+      await storage.startWaterEvent(startTime);
+      await storage.completeWaterEvent({
+        userId: 1,
+        startTime,
+        endTime: now,
+        duration: 60 * 60, // 1 hour
+        volume: 50000, // 50L
+        peakFlowRate: 2000, // 2L/min
+        avgFlowRate: 800, // 0.8L/min
+        category: "shower",
+        confidence: 95,
+        anomaly: false,
+        anomalyDescription: null,
+        flowData: [{time: startTime.toISOString(), value: 0.8}]
+      });
+      
+      const eventsAfter = await storage.getWaterEvents();
+      console.log(`After manual creation, found ${eventsAfter.length} events`);
+    }
+    
     console.log("Database seeded successfully");
   } catch (error) {
     console.error("Error seeding database:", error);
+    console.error(error.stack);
   }
 })();
