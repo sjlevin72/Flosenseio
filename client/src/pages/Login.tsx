@@ -25,16 +25,33 @@ export default function Login() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ username, password }),
+        credentials: "include", // Important for cookies/session
       });
 
+      // Try to parse the response as JSON, but handle non-JSON responses gracefully
+      let data;
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error("Error parsing JSON:", jsonError);
+          throw new Error("Invalid response from server");
+        }
+      } else {
+        const text = await response.text();
+        console.error("Non-JSON response:", text);
+        throw new Error("Invalid response format from server");
+      }
+
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.message || "Login failed");
+        throw new Error(data?.message || `Login failed (${response.status})`);
       }
 
       // Login successful, redirect to dashboard
       setLocation("/");
     } catch (err) {
+      console.error("Login error:", err);
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setIsLoading(false);
