@@ -1,8 +1,8 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Skeleton } from "../components/ui/skeleton";
 import {
   ArrowLeft,
   Droplet,
@@ -10,7 +10,7 @@ import {
   BarChart,
   AlertTriangle,
 } from "lucide-react";
-import FlowProfileChart from "@/components/dashboard/FlowProfileChart";
+import FlowProfileChart from "../components/dashboard/FlowProfileChart";
 
 export default function EventDetails() {
   const { id } = useParams();

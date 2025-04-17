@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { waterEvents, loadWaterEvents } from "./storage";
 import OpenAI from "openai";
 import { z } from "zod";
 import { insertWaterReadingSchema, insertWaterEventSchema } from "@shared/schema";
@@ -54,90 +54,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   // Water Events
   // ------------------------------------------------------------------------
-  
-  // Get water events
-  app.get("/api/water/events", async (req, res) => {
-    try {
-      const startTime = req.query.startTime ? new Date(req.query.startTime as string) : undefined;
-      const endTime = req.query.endTime ? new Date(req.query.endTime as string) : undefined;
-      const category = req.query.category as string | undefined;
-      
-      const events = await storage.getWaterEvents(startTime, endTime, category);
-      res.json(events);
-    } catch (error) {
-      console.error("Error fetching water events:", error);
-      res.status(500).json({ message: "Failed to fetch water events" });
-    }
-  });
-  
-  // Get a specific water event
-  app.get("/api/water/events/:id", async (req, res) => {
-    try {
-      const eventId = parseInt(req.params.id);
-      if (isNaN(eventId)) {
-        return res.status(400).json({ message: "Invalid event ID" });
-      }
-      
-      const event = await storage.getWaterEvent(eventId);
-      if (!event) {
-        return res.status(404).json({ message: "Event not found" });
-      }
-      
-      res.json(event);
-    } catch (error) {
-      console.error(`Error fetching water event ${req.params.id}:`, error);
-      res.status(500).json({ message: "Failed to fetch water event" });
-    }
-  });
-  
-  // Update event category
-  app.patch("/api/water/events/:id/categorize", async (req, res) => {
-    try {
-      const eventId = parseInt(req.params.id);
-      if (isNaN(eventId)) {
-        return res.status(400).json({ message: "Invalid event ID" });
-      }
-      
-      const { category } = req.body;
-      if (!category || typeof category !== "string") {
-        return res.status(400).json({ message: "Category is required" });
-      }
-      
-      const updatedEvent = await storage.updateWaterEventCategory(eventId, category);
-      if (!updatedEvent) {
-        return res.status(404).json({ message: "Event not found" });
-      }
-      
-      res.json(updatedEvent);
-    } catch (error) {
-      console.error(`Error updating water event ${req.params.id}:`, error);
-      res.status(500).json({ message: "Failed to update water event" });
-    }
-  });
-  
-  // Flag event as anomaly
-  app.patch("/api/water/events/:id/flag", async (req, res) => {
-    try {
-      const eventId = parseInt(req.params.id);
-      if (isNaN(eventId)) {
-        return res.status(400).json({ message: "Invalid event ID" });
-      }
-      
-      const { isAnomaly, reason } = req.body;
-      if (typeof isAnomaly !== "boolean") {
-        return res.status(400).json({ message: "isAnomaly field is required" });
-      }
-      
-      const updatedEvent = await storage.flagWaterEvent(eventId, isAnomaly, reason);
-      if (!updatedEvent) {
-        return res.status(404).json({ message: "Event not found" });
-      }
-      
-      res.json(updatedEvent);
-    } catch (error) {
-      console.error(`Error flagging water event ${req.params.id}:`, error);
-      res.status(500).json({ message: "Failed to flag water event" });
-    }
+  // Get water events (minimal, spreadsheet-based)
+  app.get("/api/water-events", (req, res) => {
+    // Reload data from Excel file each time the endpoint is called
+    const freshWaterEvents = loadWaterEvents();
+    res.json(freshWaterEvents);
   });
   
   // Water Usage Dashboard Data
@@ -171,7 +92,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Get readings and events within the time range
       const readings = await storage.getWaterReadings(startDate, endDate);
-      const events = await storage.getWaterEvents(startDate, endDate);
+      const events = waterEvents;
       
       // Calculate total usage
       const totalUsageML = readings.reduce((sum, reading) => sum + reading.value, 0);

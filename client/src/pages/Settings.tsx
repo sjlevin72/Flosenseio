@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
-import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
-import PrivacySettings from "@/components/settings/PrivacySettings";
-import { useSettings } from "@/hooks/useSettings";
+import { queryClient } from "../lib/queryClient";
+import { Button } from "../components/ui/button";
+import { useToast } from '../hooks/use-toast';
+import PrivacySettings from "../components/settings/PrivacySettings";
+import { useSettings } from "../hooks/useSettings";
 import { Settings as SettingsType } from "@/types/water";
 
 export default function Settings() {

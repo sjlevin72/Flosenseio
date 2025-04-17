@@ -1,22 +1,23 @@
 import { Link } from "wouter";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "../avatar";
+import { Button } from "../button";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { BellIcon, Settings, LogOut, Droplet } from "lucide-react";
+  DropdownMenuItem
+} from "../dropdown-menu";
+import { BellIcon, Settings, LogOut } from "lucide-react";
+import flosenseLogo from "../../../assets/flosense-logo.jpg";
 
 export default function Header() {
   return (
     <header className="bg-white shadow-sm">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
         <div className="flex items-center space-x-2">
-          <Droplet className="h-6 w-6 text-primary fill-primary" />
+          <img src={flosenseLogo} alt="Flosense.io Logo" className="h-8 w-auto" />
           <Link href="/">
             <h1 className="text-xl font-semibold cursor-pointer">
               <span className="text-primary">Flo</span><span className="text-neutral-900">sense.io</span>

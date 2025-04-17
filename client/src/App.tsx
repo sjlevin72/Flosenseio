@@ -1,13 +1,13 @@
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Toaster } from "@/components/ui/toaster";
-import NotFound from "@/pages/not-found";
-import Dashboard from "@/pages/Dashboard";
-import EventDetails from "@/pages/EventDetails";
-import Settings from "@/pages/Settings";
-import Header from "@/components/ui/layout/Header";
-import Footer from "@/components/ui/layout/Footer";
+// import { Toaster } from "@/components/ui/toaster";
+import NotFound from "./pages/not-found";
+import Dashboard from "./pages/Dashboard";
+import EventDetails from "./pages/EventDetails";
+import Settings from "./pages/Settings";
+import Header from "./components/ui/layout/Header";
+import Footer from "./components/ui/layout/Footer";
 
 function Router() {
   return (
@@ -32,7 +32,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <Router />
-      <Toaster />
+      {/* <Toaster /> */}
     </QueryClientProvider>
   );
 }

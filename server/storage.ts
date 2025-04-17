@@ -1,954 +1,489 @@
-import { waterReadings, waterEvents, settings, users } from "@shared/schema";
-import type { 
-  WaterReading, WaterEvent, Settings, User, 
-  InsertUser, InsertSettings, InsertWaterReading, InsertWaterEvent 
-} from "@shared/schema";
-import { db } from "./db";
-import { eq, and, gte, lte, desc } from "drizzle-orm";
+import xlsx from 'xlsx';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Interface for storage operations
-export interface IStorage {
-  // Water readings
-  getWaterReadings(startTime?: Date, endTime?: Date): Promise<WaterReading[]>;
-  getWaterReadingsBetween(startTime: Date, endTime: Date): Promise<WaterReading[]>;
-  addWaterReading(reading: { timestamp: Date, value: number }): Promise<WaterReading>;
-  
-  // Water events
-  getWaterEvents(startTime?: Date, endTime?: Date, category?: string): Promise<WaterEvent[]>;
-  getWaterEvent(id: number): Promise<WaterEvent | undefined>;
-  startWaterEvent(timestamp: Date): Promise<{ id: number, startTime: Date }>;
-  getActiveWaterEvent(): Promise<{ id: number, startTime: Date } | undefined>;
-  updateActiveWaterEvent(timestamp: Date, value: number): Promise<void>;
-  completeWaterEvent(event: Omit<WaterEvent, "id">): Promise<WaterEvent>;
-  cancelActiveWaterEvent(): Promise<void>;
-  updateWaterEventCategory(id: number, category: string): Promise<WaterEvent | undefined>;
-  flagWaterEvent(id: number, isAnomaly: boolean, reason?: string): Promise<WaterEvent | undefined>;
-  
-  // Users
-  getUser(id: number): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: { username: string, password: string }): Promise<User>;
-  
-  // Settings
-  getUserSettings(userId: number): Promise<Settings | undefined>;
-  updateUserSettings(userId: number, newSettings: Partial<Settings>): Promise<Settings>;
-  createDefaultSettings(userId: number): Promise<Settings>;
-  
-  // Data management
-  deleteAllUserData(userId: number): Promise<void>;
+// ESM-compatible __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function unixToUKDateString(unix: number): string {
+  const date = new Date(unix * 1000);
+  return date.toLocaleString('en-GB', { timeZone: 'Europe/London' });
 }
 
-// In-memory storage implementation
-export class MemStorage implements IStorage {
-  private users: Map<number, User>;
-  private readings: Map<number, WaterReading>;
-  private events: Map<number, WaterEvent>;
-  private settings: Map<number, Settings>;
-  private activeEvent: { id: number, startTime: Date } | null;
-  private currentIds: {
-    user: number;
-    reading: number;
-    event: number;
-    setting: number;
+function getDayOfWeek(unix: number): string {
+  const date = new Date(unix * 1000);
+  return date.toLocaleDateString('en-GB', { weekday: 'short' }); // Returns 'Mon', 'Tue', etc.
+}
+
+// Standardize category names to ensure consistency
+function standardizeCategory(category: string): string {
+  // Convert to lowercase for comparison
+  const lowerCategory = (category || '').toLowerCase().trim();
+  
+  // Map of category standardization
+  const categoryMap: Record<string, string> = {
+    'toilet': 'ToiletFlush',
+    'toiletflush': 'ToiletFlush',
+    'toilet_flush': 'ToiletFlush',
+    'shower': 'ShowerBath',
+    'bath': 'ShowerBath',
+    'showerbath': 'ShowerBath',
+    'shower_bath': 'ShowerBath',
+    'faucet': 'Faucet',
+    'tap': 'Faucet',
+    'sink': 'Faucet',
+    'dishwasher': 'Dishwasher',
+    'washing_machine': 'WashingMachine',
+    'washingmachine': 'WashingMachine',
+    'laundry': 'WashingMachine'
   };
-
-  constructor() {
-    this.users = new Map();
-    this.readings = new Map();
-    this.events = new Map();
-    this.settings = new Map();
-    this.activeEvent = null;
-    this.currentIds = {
-      user: 1,
-      reading: 1,
-      event: 1,
-      setting: 1,
-    };
-    
-    // Add sample user
-    this.createUser({ username: "johnsmith", password: "password123" });
-  }
-
-  // WATER READINGS
-  // =========================================================================
   
-  async getWaterReadings(startTime?: Date, endTime?: Date): Promise<WaterReading[]> {
-    let readings = Array.from(this.readings.values());
-    
-    if (startTime) {
-      readings = readings.filter(reading => 
-        new Date(reading.timestamp) >= startTime
-      );
-    }
-    
-    if (endTime) {
-      readings = readings.filter(reading => 
-        new Date(reading.timestamp) <= endTime
-      );
-    }
-    
-    // Sort by timestamp ascending
-    return readings.sort((a, b) => 
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
+  // Return standardized category or capitalize first letter if not in map
+  if (categoryMap[lowerCategory]) {
+    return categoryMap[lowerCategory];
   }
   
-  async getWaterReadingsBetween(startTime: Date, endTime: Date): Promise<WaterReading[]> {
-    return this.getWaterReadings(startTime, endTime);
+  // If not found in map, capitalize first letter
+  if (lowerCategory) {
+    return lowerCategory.charAt(0).toUpperCase() + lowerCategory.slice(1);
   }
   
-  async addWaterReading(reading: { timestamp: Date, value: number }): Promise<WaterReading> {
-    const id = this.currentIds.reading++;
-    const newReading = {
-      id,
-      userId: 1, // Default user ID
-      timestamp: reading.timestamp,
-      value: reading.value
-    };
-    
-    this.readings.set(id, newReading);
-    return newReading;
-  }
-  
-  // WATER EVENTS
-  // =========================================================================
-  
-  async getWaterEvents(startTime?: Date, endTime?: Date, category?: string): Promise<WaterEvent[]> {
-    let events = Array.from(this.events.values());
-    
-    if (startTime) {
-      events = events.filter(event => 
-        new Date(event.startTime) >= startTime
-      );
-    }
-    
-    if (endTime) {
-      events = events.filter(event => 
-        new Date(event.endTime) <= endTime
-      );
-    }
-    
-    if (category) {
-      events = events.filter(event => event.category === category);
-    }
-    
-    // Sort by start time descending (newest first)
-    return events.sort((a, b) => 
-      new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
-    );
-  }
-  
-  async getWaterEvent(id: number): Promise<WaterEvent | undefined> {
-    return this.events.get(id);
-  }
-  
-  async startWaterEvent(timestamp: Date): Promise<{ id: number, startTime: Date }> {
-    const id = this.currentIds.event;
-    this.activeEvent = { id, startTime: timestamp };
-    return this.activeEvent;
-  }
-  
-  async getActiveWaterEvent(): Promise<{ id: number, startTime: Date } | undefined> {
-    return this.activeEvent || undefined;
-  }
-  
-  async updateActiveWaterEvent(timestamp: Date, value: number): Promise<void> {
-    // No update needed for in-memory implementation
-    // This would be used in a DB implementation to update timestamps
-  }
-  
-  async completeWaterEvent(event: Omit<WaterEvent, "id">): Promise<WaterEvent> {
-    if (!this.activeEvent) {
-      throw new Error("No active water event to complete");
-    }
-    
-    const id = this.activeEvent.id;
-    const newEvent: WaterEvent = {
-      id,
-      ...event
-    };
-    
-    this.events.set(id, newEvent);
-    this.currentIds.event++;
-    this.activeEvent = null;
-    
-    return newEvent;
-  }
-  
-  async cancelActiveWaterEvent(): Promise<void> {
-    this.activeEvent = null;
-  }
-  
-  async updateWaterEventCategory(id: number, category: string): Promise<WaterEvent | undefined> {
-    const event = this.events.get(id);
-    
-    if (!event) {
-      return undefined;
-    }
-    
-    const updatedEvent = {
-      ...event,
-      category
-    };
-    
-    this.events.set(id, updatedEvent);
-    return updatedEvent;
-  }
-  
-  async flagWaterEvent(id: number, isAnomaly: boolean, reason?: string): Promise<WaterEvent | undefined> {
-    const event = this.events.get(id);
-    
-    if (!event) {
-      return undefined;
-    }
-    
-    const updatedEvent = {
-      ...event,
-      anomaly: isAnomaly,
-      anomalyDescription: reason || event.anomalyDescription
-    };
-    
-    this.events.set(id, updatedEvent);
-    return updatedEvent;
-  }
-  
-  // USERS
-  // =========================================================================
-  
-  async getUser(id: number): Promise<User | undefined> {
-    return this.users.get(id);
-  }
-  
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      user => user.username === username
-    );
-  }
-  
-  async createUser(userData: { username: string, password: string }): Promise<User> {
-    const id = this.currentIds.user++;
-    const user: User = { 
-      id, 
-      ...userData,
-      createdAt: new Date()
-    };
-    this.users.set(id, user);
-    return user;
-  }
-  
-  // SETTINGS
-  // =========================================================================
-  
-  async getUserSettings(userId: number): Promise<Settings | undefined> {
-    return this.settings.get(userId);
-  }
-  
-  async updateUserSettings(userId: number, newSettings: Partial<Settings>): Promise<Settings> {
-    let userSettings = this.settings.get(userId);
-    
-    if (!userSettings) {
-      userSettings = await this.createDefaultSettings(userId);
-    }
-    
-    const updatedSettings = {
-      ...userSettings,
-      ...newSettings
-    };
-    
-    this.settings.set(userId, updatedSettings);
-    return updatedSettings;
-  }
-  
-  async createDefaultSettings(userId: number): Promise<Settings> {
-    const id = this.currentIds.setting++;
-    const defaultSettings: Settings = {
-      id,
-      userId,
-      dataRetention: "90",
-      storeRawData: true,
-      allowAiAnalysis: true,
-      shareAnonymizedData: true,
-      shareWithUtility: false,
-      participateInCommunity: false
-    };
-    
-    this.settings.set(userId, defaultSettings);
-    return defaultSettings;
-  }
-  
-  // DATA MANAGEMENT
-  // =========================================================================
-  
-  async deleteAllUserData(userId: number): Promise<void> {
-    // Delete all readings and events
-    // In a real DB implementation, we would filter by user ID
-    this.readings.clear();
-    this.events.clear();
-    
-    // Reset settings to default
-    await this.createDefaultSettings(userId);
-  }
-  
-  // SEED DATA FOR DEMO
-  // =========================================================================
-  
-  // Helper method to generate sample data for demo/testing
-  async seedSampleData(): Promise<void> {
-    const now = new Date();
-    
-    // Generate 7 days of water readings
-    for (let day = 6; day >= 0; day--) {
-      for (let hour = 0; hour < 24; hour++) {
-        // Create realistic patterns:
-        // - Morning peak (6-8 AM): showers, toilet, etc.
-        // - Evening peak (6-9 PM): cooking, dishwasher, etc.
-        // - Random usage during the day
-        // - Minimal usage at night
-        
-        let baseRate = 0;
-        
-        if (hour >= 6 && hour <= 8) {
-          // Morning peak
-          baseRate = 5 + Math.random() * 3;
-        } else if (hour >= 18 && hour <= 21) {
-          // Evening peak
-          baseRate = 4 + Math.random() * 3;
-        } else if (hour >= 9 && hour <= 17) {
-          // Daytime
-          baseRate = 1 + Math.random() * 2;
-        } else {
-          // Night (minimal)
-          baseRate = Math.random() * 0.5;
-        }
-        
-        // Generate readings at 5-minute intervals
-        for (let minute = 0; minute < 60; minute += 5) {
-          const readingDate = new Date(now);
-          readingDate.setDate(now.getDate() - day);
-          readingDate.setHours(hour, minute, 0, 0);
-          
-          // Add noise to the base rate
-          const flowRate = baseRate + (Math.random() - 0.5) * 2;
-          
-          // Convert from L/min to mL per 5-sec interval (divide by 12)
-          const value = Math.max(0, Math.round(flowRate * 1000 / 12));
-          
-          await this.addWaterReading({
-            timestamp: readingDate,
-            value: value
-          });
-        }
-      }
-    }
-    
-    // Generate some sample events
-    const eventTemplates = [
-      {
-        category: "shower",
-        duration: 8 * 60, // 8 minutes
-        volume: 62400, // 62.4 L
-        avgFlowRate: 7800, // 7.8 L/min
-        peakFlowRate: 10500, // 10.5 L/min
-        hoursAgo: 4
-      },
-      {
-        category: "faucet",
-        duration: 1.8 * 60, // 1.8 minutes
-        volume: 5200, // 5.2 L
-        avgFlowRate: 2900, // 2.9 L/min
-        peakFlowRate: 3500, // 3.5 L/min
-        hoursAgo: 6
-      },
-      {
-        category: "dishwasher",
-        duration: 54 * 60, // 54 minutes
-        volume: 28600, // 28.6 L
-        avgFlowRate: 530, // varied, average 0.53 L/min
-        peakFlowRate: 5200, // 5.2 L/min
-        hoursAgo: 15
-      },
-      {
-        category: "washing_machine",
-        duration: 42 * 60, // 42 minutes
-        volume: 52800, // 52.8 L
-        avgFlowRate: 1257, // varied, average 1.26 L/min
-        peakFlowRate: 8600, // 8.6 L/min
-        hoursAgo: 28
-      }
-    ];
-    
-    for (const template of eventTemplates) {
-      const endTime = new Date(now);
-      endTime.setHours(now.getHours() - template.hoursAgo);
-      
-      const startTime = new Date(endTime);
-      startTime.setSeconds(startTime.getSeconds() - template.duration);
-      
-      // Generate flow data points
-      const flowData = [];
-      const dataPoints = Math.min(50, Math.max(10, Math.floor(template.duration / 30)));
-      
-      for (let i = 0; i < dataPoints; i++) {
-        const pointTime = new Date(startTime);
-        pointTime.setSeconds(pointTime.getSeconds() + i * (template.duration / dataPoints));
-        
-        let value = template.avgFlowRate / 1000; // Base flow rate in L/min
-        
-        // Add variation
-        if (template.category === "dishwasher" || template.category === "washing_machine") {
-          // Cycle patterns for appliances
-          const cyclePoint = (i / dataPoints) * 2 * Math.PI;
-          value = value * (0.5 + Math.sin(cyclePoint) * 0.5) * 3;
-        } else {
-          // Random variation for manual usage
-          value = value * (0.8 + Math.random() * 0.4);
-        }
-        
-        flowData.push({
-          time: pointTime.toISOString(),
-          value: value // L/min
-        });
-      }
-      
-      // Create event
-      this.activeEvent = { id: this.currentIds.event, startTime };
-      await this.completeWaterEvent({
-        userId: 1, // Default user
-        startTime,
-        endTime,
-        duration: template.duration,
-        volume: template.volume,
-        peakFlowRate: template.peakFlowRate,
-        avgFlowRate: template.avgFlowRate,
-        category: template.category,
-        confidence: 90 + Math.floor(Math.random() * 10),
-        anomaly: false,
-        anomalyDescription: null,
-        flowData
-      });
-    }
-    
-    // Add one anomaly event (potential leak)
-    const leakEndTime = new Date(now);
-    leakEndTime.setHours(now.getHours() - 2);
-    
-    const leakStartTime = new Date(leakEndTime);
-    leakStartTime.setHours(leakStartTime.getHours() - 3);
-    
-    const leakFlowData = [];
-    for (let i = 0; i < 20; i++) {
-      const pointTime = new Date(leakStartTime);
-      pointTime.setMinutes(pointTime.getMinutes() + i * 9);
-      
-      leakFlowData.push({
-        time: pointTime.toISOString(),
-        value: 0.1 + Math.random() * 0.15 // Low but persistent flow
-      });
-    }
-    
-    this.activeEvent = { id: this.currentIds.event, startTime: leakStartTime };
-    await this.completeWaterEvent({
-      userId: 1, // Default user
-      startTime: leakStartTime,
-      endTime: leakEndTime,
-      duration: 3 * 60 * 60, // 3 hours
-      volume: 5400, // 5.4 L
-      peakFlowRate: 300, // 0.3 L/min
-      avgFlowRate: 150, // 0.15 L/min
-      category: "other",
-      confidence: 70,
-      anomaly: true,
-      anomalyDescription: "Continuous low flow detected during inactive hours",
-      flowData: leakFlowData
-    });
-  }
+  return 'Other';
 }
 
-// Database storage implementation
-export class DatabaseStorage implements IStorage {
-  private activeEvent: { id: number; startTime: Date } | null = null;
-  private defaultUserId = 1; // Default user ID for demo purposes
-
-  // WATER READINGS
-  // =========================================================================
+// Generate random faucet usage data for different days of the week
+function generateRandomFaucetEvents(count: number): Array<any> {
+  const faucetEvents = [];
+  const days = [1, 2, 3, 4, 5, 6, 7]; // Monday to Sunday
   
-  async getWaterReadings(startTime?: Date, endTime?: Date): Promise<WaterReading[]> {
-    let query = db.select().from(waterReadings);
+  for (let i = 0; i < count; i++) {
+    // Random day of the week (1-7)
+    const dayOfWeek = days[Math.floor(Math.random() * days.length)];
     
-    if (startTime) {
-      query = query.where(gte(waterReadings.timestamp, startTime));
-    }
+    // Random time of day (0-23 hours)
+    const hour = Math.floor(Math.random() * 24);
     
-    if (endTime) {
-      query = query.where(lte(waterReadings.timestamp, endTime));
-    }
+    // Random volume between 0.2 and 8 liters
+    const volume = +(0.2 + Math.random() * 7.8).toFixed(2);
     
-    return await query.orderBy(waterReadings.timestamp);
-  }
-  
-  async getWaterReadingsBetween(startTime: Date, endTime: Date): Promise<WaterReading[]> {
-    return await db.select()
-      .from(waterReadings)
-      .where(
-        and(
-          gte(waterReadings.timestamp, startTime),
-          lte(waterReadings.timestamp, endTime)
-        )
-      )
-      .orderBy(waterReadings.timestamp);
-  }
-  
-  async addWaterReading(reading: { timestamp: Date, value: number }): Promise<WaterReading> {
-    const [newReading] = await db.insert(waterReadings)
-      .values({
-        userId: this.defaultUserId,
-        timestamp: reading.timestamp,
-        value: reading.value
-      })
-      .returning();
+    // Random duration based on volume (roughly 0.1-0.3 liters per second)
+    const flowRate = 0.1 + Math.random() * 0.2; // liters per second
+    const duration = Math.round(volume / flowRate);
     
-    return newReading;
-  }
-  
-  // WATER EVENTS
-  // =========================================================================
-  
-  async getWaterEvents(startTime?: Date, endTime?: Date, category?: string): Promise<WaterEvent[]> {
-    let query = db.select().from(waterEvents);
-    
-    const conditions = [];
-    
-    if (startTime) {
-      conditions.push(gte(waterEvents.startTime, startTime));
-    }
-    
-    if (endTime) {
-      conditions.push(lte(waterEvents.endTime, endTime));
-    }
-    
-    if (category) {
-      conditions.push(eq(waterEvents.category, category));
-    }
-    
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
-    }
-    
-    return await query.orderBy(desc(waterEvents.startTime));
-  }
-  
-  async getWaterEvent(id: number): Promise<WaterEvent | undefined> {
-    const [event] = await db.select()
-      .from(waterEvents)
-      .where(eq(waterEvents.id, id))
-      .limit(1);
-    
-    return event;
-  }
-  
-  async startWaterEvent(timestamp: Date): Promise<{ id: number, startTime: Date }> {
-    // For PostgreSQL, we'll store the active event in memory since there's not
-    // an easy way to track it in the database without adding an extra table
-    this.activeEvent = { id: -1, startTime: timestamp };
-    return this.activeEvent;
-  }
-  
-  async getActiveWaterEvent(): Promise<{ id: number, startTime: Date } | undefined> {
-    return this.activeEvent || undefined;
-  }
-  
-  async updateActiveWaterEvent(timestamp: Date, value: number): Promise<void> {
-    // No operation needed - tracking in memory
-  }
-  
-  async completeWaterEvent(event: Omit<WaterEvent, "id">): Promise<WaterEvent> {
-    if (!this.activeEvent) {
-      throw new Error("No active water event to complete");
-    }
-    
-    try {
-      console.log("Completing water event with data:", JSON.stringify({
-        activeEvent: this.activeEvent,
-        eventData: event
-      }, null, 2));
-      
-      // Extract and use the userId from event, or default to this.defaultUserId
-      const { userId = this.defaultUserId, ...eventData } = event;
-      
-      const [newEvent] = await db.insert(waterEvents)
-        .values({
-          userId,
-          ...eventData
-        })
-        .returning();
-      
-      console.log("Successfully created event:", newEvent?.id);
-      this.activeEvent = null;
-      return newEvent;
-    } catch (error: any) {
-      console.error("Error completing water event:", error);
-      console.error("Error details:", error.stack);
-      throw error;
-    }
-  }
-  
-  async cancelActiveWaterEvent(): Promise<void> {
-    this.activeEvent = null;
-  }
-  
-  async updateWaterEventCategory(id: number, category: string): Promise<WaterEvent | undefined> {
-    const [updatedEvent] = await db.update(waterEvents)
-      .set({ category })
-      .where(eq(waterEvents.id, id))
-      .returning();
-    
-    return updatedEvent;
-  }
-  
-  async flagWaterEvent(id: number, isAnomaly: boolean, reason?: string): Promise<WaterEvent | undefined> {
-    const [updatedEvent] = await db.update(waterEvents)
-      .set({ 
-        anomaly: isAnomaly,
-        anomalyDescription: reason
-      })
-      .where(eq(waterEvents.id, id))
-      .returning();
-    
-    return updatedEvent;
-  }
-  
-  // USERS
-  // =========================================================================
-  
-  async getUser(id: number): Promise<User | undefined> {
-    const [user] = await db.select()
-      .from(users)
-      .where(eq(users.id, id))
-      .limit(1);
-    
-    return user;
-  }
-  
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select()
-      .from(users)
-      .where(eq(users.username, username))
-      .limit(1);
-    
-    return user;
-  }
-  
-  async createUser(userData: { username: string; password: string }): Promise<User> {
-    const [user] = await db.insert(users)
-      .values(userData)
-      .returning();
-    
-    return user;
-  }
-  
-  // SETTINGS
-  // =========================================================================
-  
-  async getUserSettings(userId: number): Promise<Settings | undefined> {
-    const [userSettings] = await db.select()
-      .from(settings)
-      .where(eq(settings.userId, userId))
-      .limit(1);
-    
-    return userSettings;
-  }
-  
-  async updateUserSettings(userId: number, newSettings: Partial<Settings>): Promise<Settings> {
-    let userSettings = await this.getUserSettings(userId);
-    
-    if (!userSettings) {
-      userSettings = await this.createDefaultSettings(userId);
-    }
-    
-    const [updatedSettings] = await db.update(settings)
-      .set(newSettings)
-      .where(eq(settings.id, userSettings.id))
-      .returning();
-    
-    return updatedSettings;
-  }
-  
-  async createDefaultSettings(userId: number): Promise<Settings> {
-    const defaultSettings: InsertSettings = {
-      userId,
-      dataRetention: "90",
-      storeRawData: true,
-      allowAiAnalysis: true,
-      shareAnonymizedData: true,
-      shareWithUtility: false,
-      participateInCommunity: false
-    };
-    
-    const [newSettings] = await db.insert(settings)
-      .values(defaultSettings)
-      .returning();
-    
-    return newSettings;
-  }
-  
-  // DATA MANAGEMENT
-  // =========================================================================
-  
-  async deleteAllUserData(userId: number): Promise<void> {
-    // Delete all readings and events for user
-    await db.delete(waterReadings).where(eq(waterReadings.userId, userId));
-    await db.delete(waterEvents).where(eq(waterEvents.userId, userId));
-    
-    // Reset settings to default
-    const userSettings = await this.getUserSettings(userId);
-    if (userSettings) {
-      await db.delete(settings).where(eq(settings.id, userSettings.id));
-    }
-    await this.createDefaultSettings(userId);
-  }
-  
-  // SEED DATA
-  // =========================================================================
-  
-  async seedSampleData(): Promise<void> {
-    // Create default user if it doesn't exist
-    const existingUser = await this.getUserByUsername("johnsmith");
-    if (!existingUser) {
-      await this.createUser({ 
-        username: "johnsmith", 
-        password: "password123" 
-      });
-    }
-    
+    // Create timestamps
     const now = new Date();
+    now.setDate(now.getDate() - (now.getDay() + 7 - dayOfWeek) % 7); // Set to the correct day of the week
+    now.setHours(hour, Math.floor(Math.random() * 60), 0, 0);
     
-    // Check if we already have data
-    const existingReadings = await this.getWaterReadings();
-    if (existingReadings.length > 0) {
-      // Check if we have events, if not generate them even if we have readings
-      const existingEvents = await this.getWaterEvents();
-      if (existingEvents.length > 0) {
-        console.log("Database already contains readings and events, skipping seed");
-        return;
-      } else {
-        console.log("Database contains readings but no events, generating events...");
-        // Proceed to generate events from existing readings
-      }
-    }
+    const startTimestamp = Math.floor(now.getTime() / 1000);
+    const endTimestamp = startTimestamp + duration;
     
-    // Same seeding logic as before, but with this.defaultUserId
-    // Generate 7 days of water readings
-    for (let day = 6; day >= 0; day--) {
-      for (let hour = 0; hour < 24; hour++) {
-        // Create realistic patterns:
-        // - Morning peak (6-8 AM): showers, toilet, etc.
-        // - Evening peak (6-9 PM): cooking, dishwasher, etc.
-        // - Random usage during the day
-        // - Minimal usage at night
-        
-        let baseRate = 0;
-        
-        if (hour >= 6 && hour <= 8) {
-          // Morning peak
-          baseRate = 5 + Math.random() * 3;
-        } else if (hour >= 18 && hour <= 21) {
-          // Evening peak
-          baseRate = 4 + Math.random() * 3;
-        } else if (hour >= 9 && hour <= 17) {
-          // Daytime
-          baseRate = 1 + Math.random() * 2;
-        } else {
-          // Night (minimal)
-          baseRate = Math.random() * 0.5;
-        }
-        
-        // Generate readings at 5-minute intervals
-        for (let minute = 0; minute < 60; minute += 5) {
-          const readingDate = new Date(now);
-          readingDate.setDate(now.getDate() - day);
-          readingDate.setHours(hour, minute, 0, 0);
-          
-          // Add noise to the base rate
-          const flowRate = baseRate + (Math.random() - 0.5) * 2;
-          
-          // Convert from L/min to mL per 5-sec interval (divide by 12)
-          const value = Math.max(0, Math.round(flowRate * 1000 / 12));
-          
-          await this.addWaterReading({
-            timestamp: readingDate,
-            value: value
-          });
-        }
-      }
-    }
-    
-    // Generate some sample events
-    const eventTemplates = [
-      {
-        category: "shower",
-        duration: 8 * 60, // 8 minutes
-        volume: 62400, // 62.4 L
-        avgFlowRate: 7800, // 7.8 L/min
-        peakFlowRate: 10500, // 10.5 L/min
-        hoursAgo: 4
-      },
-      {
-        category: "faucet",
-        duration: 1.8 * 60, // 1.8 minutes
-        volume: 5200, // 5.2 L
-        avgFlowRate: 2900, // 2.9 L/min
-        peakFlowRate: 3500, // 3.5 L/min
-        hoursAgo: 6
-      },
-      {
-        category: "dishwasher",
-        duration: 54 * 60, // 54 minutes
-        volume: 28600, // 28.6 L
-        avgFlowRate: 530, // varied, average 0.53 L/min
-        peakFlowRate: 5200, // 5.2 L/min
-        hoursAgo: 15
-      },
-      {
-        category: "washing_machine",
-        duration: 42 * 60, // 42 minutes
-        volume: 52800, // 52.8 L
-        avgFlowRate: 1257, // varied, average 1.26 L/min
-        peakFlowRate: 8600, // 8.6 L/min
-        hoursAgo: 28
-      }
-    ];
-    
-    for (const template of eventTemplates) {
-      const endTime = new Date(now);
-      endTime.setHours(now.getHours() - template.hoursAgo);
-      
-      const startTime = new Date(endTime);
-      startTime.setSeconds(startTime.getSeconds() - template.duration);
-      
-      // Generate flow data points
-      const flowData = [];
-      const dataPoints = Math.min(50, Math.max(10, Math.floor(template.duration / 30)));
-      
-      for (let i = 0; i < dataPoints; i++) {
-        const pointTime = new Date(startTime);
-        pointTime.setSeconds(pointTime.getSeconds() + i * (template.duration / dataPoints));
-        
-        let value = template.avgFlowRate / 1000; // Base flow rate in L/min
-        
-        // Add variation
-        if (template.category === "dishwasher" || template.category === "washing_machine") {
-          // Cycle patterns for appliances
-          const cyclePoint = (i / dataPoints) * 2 * Math.PI;
-          value = value * (0.5 + Math.sin(cyclePoint) * 0.5) * 3;
-        } else {
-          // Random variation for manual usage
-          value = value * (0.8 + Math.random() * 0.4);
-        }
-        
-        flowData.push({
-          time: pointTime.toISOString(),
-          value: value // L/min
-        });
-      }
-      
-      // Create event
-      this.activeEvent = { id: -1, startTime };
-      await this.completeWaterEvent({
-        userId: this.defaultUserId,
-        startTime,
-        endTime,
-        duration: template.duration,
-        volume: template.volume,
-        peakFlowRate: template.peakFlowRate,
-        avgFlowRate: template.avgFlowRate,
-        category: template.category,
-        confidence: 90 + Math.floor(Math.random() * 10),
-        anomaly: false,
-        anomalyDescription: null,
-        flowData
-      });
-    }
-    
-    // Add one anomaly event (potential leak)
-    const leakEndTime = new Date(now);
-    leakEndTime.setHours(now.getHours() - 2);
-    
-    const leakStartTime = new Date(leakEndTime);
-    leakStartTime.setHours(leakStartTime.getHours() - 3);
-    
-    const leakFlowData = [];
-    for (let i = 0; i < 20; i++) {
-      const pointTime = new Date(leakStartTime);
-      pointTime.setMinutes(pointTime.getMinutes() + i * 9);
-      
-      leakFlowData.push({
-        time: pointTime.toISOString(),
-        value: 0.1 + Math.random() * 0.15 // Low but persistent flow
-      });
-    }
-    
-    this.activeEvent = { id: -1, startTime: leakStartTime };
-    await this.completeWaterEvent({
-      userId: this.defaultUserId,
-      startTime: leakStartTime,
-      endTime: leakEndTime,
-      duration: 3 * 60 * 60, // 3 hours
-      volume: 5400, // 5.4 L
-      peakFlowRate: 300, // 0.3 L/min
-      avgFlowRate: 150, // 0.15 L/min
-      category: "other",
-      confidence: 70,
-      anomaly: true,
-      anomalyDescription: "Continuous low flow detected during inactive hours",
-      flowData: leakFlowData
+    faucetEvents.push({
+      'eventNo.': 1000 + i, // Start from 1000 to avoid conflicts
+      startedAt: startTimestamp,
+      finishedAt: endTimestamp,
+      volume: volume,
+      duration: duration,
+      category: 'Faucet' // Capitalized category
     });
   }
+  
+  return faucetEvents;
 }
 
-// Initialize database storage
-export const storage = new DatabaseStorage();
+// Generate specific Thursday events
+function generateThursdayEvents(): Array<any> {
+  const thursdayEvents = [];
+  const categories = [
+    { name: 'ShowerBath', minVolume: 30, maxVolume: 80, minDuration: 300, maxDuration: 600 },
+    { name: 'ToiletFlush', volume: 6, minDuration: 20, maxDuration: 40 },
+    { name: 'Dishwasher', minVolume: 15, maxVolume: 25, minDuration: 1800, maxDuration: 3600 },
+    { name: 'WashingMachine', minVolume: 40, maxVolume: 80, minDuration: 2400, maxDuration: 3600 }
+  ];
+  
+  // Get the most recent Thursday
+  const now = new Date();
+  const dayOfWeek = 4; // Thursday (0 = Sunday, 1 = Monday, ..., 4 = Thursday)
+  const thursday = new Date(now);
+  thursday.setDate(now.getDate() - (now.getDay() + 7 - dayOfWeek) % 7);
+  
+  // Morning routine (6-9 AM)
+  let morningTime = new Date(thursday);
+  morningTime.setHours(6, 30, 0, 0);
+  
+  // Toilet flush at 6:30 AM
+  let startTimestamp = Math.floor(morningTime.getTime() / 1000);
+  let duration = Math.floor(Math.random() * (categories[1].maxDuration - categories[1].minDuration + 1)) + categories[1].minDuration;
+  thursdayEvents.push({
+    'eventNo.': 2001,
+    startedAt: startTimestamp,
+    finishedAt: startTimestamp + duration,
+    volume: categories[1].volume,
+    duration: duration,
+    category: categories[1].name
+  });
+  
+  // Shower at 6:35 AM
+  morningTime.setHours(6, 35, 0, 0);
+  startTimestamp = Math.floor(morningTime.getTime() / 1000);
+  duration = Math.floor(Math.random() * (categories[0].maxDuration - categories[0].minDuration + 1)) + categories[0].minDuration;
+  const showerVolume = Math.floor(Math.random() * (categories[0].maxVolume - categories[0].minVolume + 1)) + categories[0].minVolume;
+  thursdayEvents.push({
+    'eventNo.': 2002,
+    startedAt: startTimestamp,
+    finishedAt: startTimestamp + duration,
+    volume: showerVolume,
+    duration: duration,
+    category: categories[0].name
+  });
+  
+  // Dishwasher at 8:00 AM
+  morningTime.setHours(8, 0, 0, 0);
+  startTimestamp = Math.floor(morningTime.getTime() / 1000);
+  duration = Math.floor(Math.random() * (categories[2].maxDuration - categories[2].minDuration + 1)) + categories[2].minDuration;
+  const dishwasherVolume = Math.floor(Math.random() * (categories[2].maxVolume - categories[2].minVolume + 1)) + categories[2].minVolume;
+  thursdayEvents.push({
+    'eventNo.': 2003,
+    startedAt: startTimestamp,
+    finishedAt: startTimestamp + duration,
+    volume: dishwasherVolume,
+    duration: duration,
+    category: categories[2].name
+  });
+  
+  // Evening routine
+  // Washing machine at 6:00 PM
+  let eveningTime = new Date(thursday);
+  eveningTime.setHours(18, 0, 0, 0);
+  startTimestamp = Math.floor(eveningTime.getTime() / 1000);
+  duration = Math.floor(Math.random() * (categories[3].maxDuration - categories[3].minDuration + 1)) + categories[3].minDuration;
+  const washingVolume = Math.floor(Math.random() * (categories[3].maxVolume - categories[3].minVolume + 1)) + categories[3].minVolume;
+  thursdayEvents.push({
+    'eventNo.': 2004,
+    startedAt: startTimestamp,
+    finishedAt: startTimestamp + duration,
+    volume: washingVolume,
+    duration: duration,
+    category: categories[3].name
+  });
+  
+  // Toilet flush at 9:30 PM
+  eveningTime.setHours(21, 30, 0, 0);
+  startTimestamp = Math.floor(eveningTime.getTime() / 1000);
+  duration = Math.floor(Math.random() * (categories[1].maxDuration - categories[1].minDuration + 1)) + categories[1].minDuration;
+  thursdayEvents.push({
+    'eventNo.': 2005,
+    startedAt: startTimestamp,
+    finishedAt: startTimestamp + duration,
+    volume: categories[1].volume,
+    duration: duration,
+    category: categories[1].name
+  });
+  
+  return thursdayEvents;
+}
 
-// Seed sample data for demonstration
-(async () => {
+// Generate sample water events for the past week with realistic patterns
+function generatePastWeekEvents(): WaterEvent[] {
+  const events: WaterEvent[] = [];
+  const now = new Date();
+  let eventNo = 10000;
+  
+  // Generate events for the past 7 days
+  for (let day = 6; day >= 0; day--) {
+    const date = new Date();
+    date.setDate(now.getDate() - day);
+    
+    // Morning shower (higher volume on weekends)
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    const morningHour = 7 + Math.floor(Math.random() * 2); // 7-8 AM
+    const morningShowerVolume = isWeekend ? 80 + Math.random() * 40 : 60 + Math.random() * 30;
+    const morningShowerDuration = morningShowerVolume * 12; // approx 12 seconds per liter
+    
+    const morningDate = new Date(date);
+    morningDate.setHours(morningHour, Math.floor(Math.random() * 59), 0, 0);
+    const morningEndDate = new Date(morningDate);
+    morningEndDate.setMinutes(morningEndDate.getMinutes() + 10);
+    
+    events.push({
+      eventNo: eventNo++,
+      startedAt: formatDateForEvent(morningDate),
+      finishedAt: formatDateForEvent(morningEndDate),
+      volume: morningShowerVolume,
+      duration: morningShowerDuration,
+      category: 'ShowerBath',
+      dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+    });
+    
+    // Toilet flushes (4-6 per day)
+    const toiletFlushes = 4 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < toiletFlushes; i++) {
+      const hour = 7 + Math.floor(Math.random() * 14); // Between 7 AM and 9 PM
+      const minute = Math.floor(Math.random() * 59);
+      const volume = 4.5 + Math.random() * 1.5; // 4.5-6 liters per flush
+      
+      const toiletDate = new Date(date);
+      toiletDate.setHours(hour, minute, 0, 0);
+      const toiletEndDate = new Date(toiletDate);
+      toiletEndDate.setMinutes(toiletEndDate.getMinutes() + 1);
+      
+      events.push({
+        eventNo: eventNo++,
+        startedAt: formatDateForEvent(toiletDate),
+        finishedAt: formatDateForEvent(toiletEndDate),
+        volume: volume,
+        duration: 5 + Math.floor(Math.random() * 3), // 5-7 seconds
+        category: 'ToiletFlush',
+        dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+      });
+    }
+    
+    // Washing Machine (twice a week)
+    if (day === 1 || day === 5) {
+      const washingDate = new Date(date);
+      washingDate.setHours(16, Math.floor(Math.random() * 59), 0, 0);
+      const washingEndDate = new Date(washingDate);
+      washingEndDate.setHours(17, Math.floor(Math.random() * 30), 0, 0);
+      
+      events.push({
+        eventNo: eventNo++,
+        startedAt: formatDateForEvent(washingDate),
+        finishedAt: formatDateForEvent(washingEndDate),
+        volume: 45 + Math.random() * 15, // 45-60 liters
+        duration: 2700 + Math.floor(Math.random() * 900), // About 45-60 minutes
+        category: 'WashingMachine',
+        dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+      });
+    }
+    
+    // Dishwasher (every other day)
+    if (day % 2 === 0) {
+      const dishwasherDate = new Date(date);
+      dishwasherDate.setHours(19, Math.floor(Math.random() * 59), 0, 0);
+      const dishwasherEndDate = new Date(dishwasherDate);
+      dishwasherEndDate.setHours(20, Math.floor(Math.random() * 30), 0, 0);
+      
+      events.push({
+        eventNo: eventNo++,
+        startedAt: formatDateForEvent(dishwasherDate),
+        finishedAt: formatDateForEvent(dishwasherEndDate),
+        volume: 15 + Math.random() * 5, // 15-20 liters
+        duration: 3600 + Math.floor(Math.random() * 600), // About an hour
+        category: 'Dishwasher',
+        dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+      });
+    }
+    
+    // Faucet usage (multiple times per day)
+    const faucetUses = 8 + Math.floor(Math.random() * 5); // 8-12 times per day
+    for (let i = 0; i < faucetUses; i++) {
+      const hour = 7 + Math.floor(Math.random() * 14); // Between 7 AM and 9 PM
+      const minute = Math.floor(Math.random() * 59);
+      const volume = 0.5 + Math.random() * 2.5; // 0.5-3 liters
+      const duration = 10 + Math.floor(Math.random() * 50); // 10-60 seconds
+      
+      const faucetDate = new Date(date);
+      faucetDate.setHours(hour, minute, 0, 0);
+      const faucetEndDate = new Date(faucetDate);
+      faucetEndDate.setMinutes(faucetEndDate.getMinutes() + Math.floor(duration / 60));
+      
+      events.push({
+        eventNo: eventNo++,
+        startedAt: formatDateForEvent(faucetDate),
+        finishedAt: formatDateForEvent(faucetEndDate),
+        volume: volume,
+        duration: duration,
+        category: 'Faucet',
+        dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+      });
+    }
+    
+    // Evening shower (occasionally)
+    if (Math.random() > 0.7) { // 30% chance of evening shower
+      const eveningHour = 20 + Math.floor(Math.random() * 2); // 8-9 PM
+      const eveningShowerVolume = 50 + Math.random() * 30;
+      const eveningShowerDuration = eveningShowerVolume * 12; // approx 12 seconds per liter
+      
+      const eveningDate = new Date(date);
+      eveningDate.setHours(eveningHour, Math.floor(Math.random() * 59), 0, 0);
+      const eveningEndDate = new Date(eveningDate);
+      eveningEndDate.setMinutes(eveningEndDate.getMinutes() + 10);
+      
+      events.push({
+        eventNo: eventNo++,
+        startedAt: formatDateForEvent(eveningDate),
+        finishedAt: formatDateForEvent(eveningEndDate),
+        volume: eveningShowerVolume,
+        duration: eveningShowerDuration,
+        category: 'ShowerBath',
+        dayOfWeek: date.toLocaleDateString('en-GB', { weekday: 'short' })
+      });
+    }
+  }
+  
+  // Sort events by startedAt
+  return events.sort((a, b) => {
+    const dateA = new Date(a.startedAt).getTime();
+    const dateB = new Date(b.startedAt).getTime();
+    return dateB - dateA; // Most recent first
+  });
+}
+
+// Helper function to format dates consistently for events
+function formatDateForEvent(date: Date): string {
+  return date.toISOString().replace('T', ' ').substring(0, 19);
+}
+
+// Define the type for water events
+interface WaterEvent {
+  eventNo: number;
+  startedAt: string;
+  finishedAt: string;
+  volume: number;
+  duration: number;
+  category: string;
+  dayOfWeek: string;
+  rawTimestamp?: number;
+  source?: string;
+}
+
+// Initialize empty array
+let waterEvents: WaterEvent[] = [];
+
+// Function to load water events from Excel file
+function loadFromExcel(): WaterEvent[] {
+  const absPath = path.join(__dirname, '../SampleData.xlsx');
+  
+  console.log('[storage.ts] Reading:', absPath);
+  
   try {
-    console.log("Starting to seed database...");
-    await storage.seedSampleData();
+    const workbook = xlsx.readFile(absPath);
+    const sheetName = workbook.SheetNames[0];
+    const rows = xlsx.utils.sheet_to_json<any>(workbook.Sheets[sheetName], { defval: '' });
     
-    // Double check if events were created
-    const events = await storage.getWaterEvents();
-    console.log(`After seeding, found ${events.length} events`);
+    // Process existing events from Excel
+    const processedEvents = rows.map((row: any) => {
+      // Get standardized category
+      const category = standardizeCategory(row.category || row.categorisation || row.Category || '');
+      
+      // Adjust toilet flush volume to exactly 6 liters
+      let volume = Number(row.volume);
+      if (category === 'ToiletFlush') {
+        volume = 6; // Set toilet flush to exactly 6 liters
+      }
+      
+      const startedAt = Number(row.startedAt) || 0;
+      
+      return {
+        eventNo: row['eventNo.'] || 0,
+        startedAt: unixToUKDateString(startedAt),
+        finishedAt: unixToUKDateString(Number(row.finishedAt) || 0),
+        volume: volume,
+        duration: Number(row.duration) || 0,
+        category: category,
+        dayOfWeek: getDayOfWeek(startedAt),
+        rawTimestamp: startedAt, // Store raw timestamp for sorting
+        source: 'excel' // Mark the source as excel
+      };
+    });
     
-    if (events.length === 0) {
-      console.log("No events were created during seeding. Attempting to create events manually...");
-      
-      // Manually create a test event
-      const now = new Date();
-      const startTime = new Date(now);
-      startTime.setHours(now.getHours() - 1);
-      
-      await storage.startWaterEvent(startTime);
-      await storage.completeWaterEvent({
-        userId: 1,
-        startTime,
-        endTime: now,
-        duration: 60 * 60, // 1 hour
-        volume: 50000, // 50L
-        peakFlowRate: 2000, // 2L/min
-        avgFlowRate: 800, // 0.8L/min
-        category: "shower",
-        confidence: 95,
-        anomaly: false,
-        anomalyDescription: null,
-        flowData: [{time: startTime.toISOString(), value: 0.8}]
-      });
-      
-      const eventsAfter = await storage.getWaterEvents();
-      console.log(`After manual creation, found ${eventsAfter.length} events`);
-    }
+    // Get the unique categories from the Excel file
+    const excelCategories = new Set(processedEvents.map(event => event.category));
+    console.log('[storage.ts] Excel categories:', Array.from(excelCategories));
     
-    console.log("Database seeded successfully");
-  } catch (error: any) {
-    console.error("Error seeding database:", error);
-    console.error(error.stack);
+    // Generate 20 random faucet events
+    const faucetEvents = generateRandomFaucetEvents(20).map((event: any) => {
+      const startedAt = event.startedAt || 0;
+      return {
+        eventNo: event['eventNo.'] || 0,
+        startedAt: unixToUKDateString(startedAt),
+        finishedAt: unixToUKDateString(event.finishedAt || 0),
+        volume: event.volume || 0,
+        duration: event.duration || 0,
+        category: standardizeCategory(event.category || ''),
+        dayOfWeek: getDayOfWeek(startedAt),
+        rawTimestamp: startedAt,
+        source: 'generated' // Mark the source as generated
+      };
+    });
+    
+    // Generate Thursday events
+    const thursdayEvents = generateThursdayEvents().map((event: any) => {
+      const startedAt = event.startedAt || 0;
+      return {
+        eventNo: event['eventNo.'] || 0,
+        startedAt: unixToUKDateString(startedAt),
+        finishedAt: unixToUKDateString(event.finishedAt || 0),
+        volume: event.volume || 0,
+        duration: event.duration || 0,
+        category: event.category || '',
+        dayOfWeek: getDayOfWeek(startedAt),
+        rawTimestamp: startedAt,
+        source: 'generated' // Mark the source as generated
+      };
+    });
+    
+    // Filter out generated events that have the same category as Excel events
+    const filteredFaucetEvents = faucetEvents.filter(event => !excelCategories.has(event.category));
+    const filteredThursdayEvents = thursdayEvents.filter(event => !excelCategories.has(event.category));
+    
+    // Combine all events
+    let allEvents = [...processedEvents, ...filteredFaucetEvents, ...filteredThursdayEvents];
+    
+    // Sort by timestamp in descending order (newest first)
+    allEvents.sort((a, b) => (b.rawTimestamp || 0) - (a.rawTimestamp || 0));
+    
+    // Renumber events starting from 13452 and counting down
+    let eventNumber = 13452;
+    allEvents = allEvents.map(event => {
+      const newEvent = { ...event, eventNo: eventNumber-- };
+      // Remove the temporary properties using type assertion
+      if (newEvent.rawTimestamp !== undefined) {
+        (newEvent as any).rawTimestamp = undefined;
+      }
+      if (newEvent.source !== undefined) {
+        (newEvent as any).source = undefined;
+      }
+      return newEvent;
+    });
+    
+    // Update the waterEvents array
+    waterEvents = allEvents;
+    
+    console.log('[storage.ts] Loaded events:', waterEvents.length);
+    
+    return waterEvents;
+  } catch (err) {
+    console.error('[storage.ts] Error:', err);
+    return [];
   }
-})();
+}
+
+// Export water events with sample data for the past week
+export function loadWaterEvents(): WaterEvent[] {
+  try {
+    // First try to load from Excel file
+    const excelData = loadFromExcel();
+    
+    // Generate past week events
+    const pastWeekEvents = generatePastWeekEvents();
+    
+    // Combine Excel data with generated past week events
+    // Filter out any Excel events that have the same day as our generated events
+    // to avoid duplicates
+    const pastWeekDates = new Set(pastWeekEvents.map(e => e.startedAt.split(' ')[0]));
+    const filteredExcelData = excelData.filter(e => !pastWeekDates.has(e.startedAt.split(' ')[0]));
+    
+    return [...pastWeekEvents, ...filteredExcelData];
+  } catch (error) {
+    console.error('Error loading water events:', error);
+    return generatePastWeekEvents(); // Fallback to just the generated data
+  }
+}
+
+// Load the data initially
+loadWaterEvents();
+
+// Export both the array and the reload function
+export { waterEvents };
