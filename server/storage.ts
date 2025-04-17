@@ -150,6 +150,18 @@ function getDayOfWeek(date: Date): string {
   return date.toLocaleDateString('en-GB', { weekday: 'short' });
 }
 
+// Retry function for database operations
+async function withRetry<T>(operation: () => Promise<T>, retries = 3, delay = 500): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (retries <= 0) throw error;
+    console.warn(`Database operation failed, retrying... (${retries} attempts left)`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return withRetry(operation, retries - 1, delay * 1.5);
+  }
+}
+
 // Storage API
 export const storage = {
   // Water readings
@@ -158,22 +170,25 @@ export const storage = {
       // Default user ID
       const userId = 1;
       
-      let query = db.select().from(waterReadingsTable);
-      
-      // Apply filters
-      const filters = [];
-      filters.push(eq(waterReadingsTable.userId, userId));
-      
-      if (startTime) {
-        filters.push(gte(waterReadingsTable.timestamp, startTime));
-      }
-      
-      if (endTime) {
-        filters.push(lte(waterReadingsTable.timestamp, endTime));
-      }
-      
-      // Execute query with all filters
-      return await query.where(and(...filters));
+      // Build query with filters
+      return await withRetry(async () => {
+        let query = db.select().from(waterReadingsTable);
+        
+        // Apply filters
+        const filters = [];
+        filters.push(eq(waterReadingsTable.userId, userId));
+        
+        if (startTime) {
+          filters.push(gte(waterReadingsTable.timestamp, startTime));
+        }
+        
+        if (endTime) {
+          filters.push(lte(waterReadingsTable.timestamp, endTime));
+        }
+        
+        // Execute query with all filters
+        return await query.where(and(...filters));
+      });
     } catch (error) {
       console.error('Error fetching water readings:', error);
       
@@ -186,15 +201,17 @@ export const storage = {
     try {
       const userId = 1;
       
-      return await db.select()
-        .from(waterReadingsTable)
-        .where(
-          and(
-            eq(waterReadingsTable.userId, userId),
-            gte(waterReadingsTable.timestamp, startTime),
-            lte(waterReadingsTable.timestamp, endTime)
-          )
-        );
+      return await withRetry(async () => {
+        return await db.select()
+          .from(waterReadingsTable)
+          .where(
+            and(
+              eq(waterReadingsTable.userId, userId),
+              gte(waterReadingsTable.timestamp, startTime),
+              lte(waterReadingsTable.timestamp, endTime)
+            )
+          );
+      });
     } catch (error) {
       console.error('Error fetching water readings between dates:', error);
       
@@ -207,13 +224,15 @@ export const storage = {
     try {
       const userId = 1;
       
-      const result = await db.insert(waterReadingsTable).values({
-        userId,
-        timestamp: reading.timestamp,
-        value: reading.value
-      }).returning();
-      
-      return result[0];
+      return await withRetry(async () => {
+        const result = await db.insert(waterReadingsTable).values({
+          userId,
+          timestamp: reading.timestamp,
+          value: reading.value
+        }).returning();
+        
+        return result[0];
+      });
     } catch (error) {
       console.error('Error adding water reading:', error);
       
@@ -232,16 +251,18 @@ export const storage = {
     try {
       const userId = 1;
       
-      const activeEvents = await db.select()
-        .from(waterEventsTable)
-        .where(
-          and(
-            eq(waterEventsTable.userId, userId),
-            isNull(waterEventsTable.endTime)
-          )
-        );
-      
-      return activeEvents.length > 0 ? activeEvents[0] : null;
+      return await withRetry(async () => {
+        const activeEvents = await db.select()
+          .from(waterEventsTable)
+          .where(
+            and(
+              eq(waterEventsTable.userId, userId),
+              isNull(waterEventsTable.endTime)
+            )
+          );
+        
+        return activeEvents.length > 0 ? activeEvents[0] : null;
+      });
     } catch (error) {
       console.error('Error fetching active water event:', error);
       return activeWaterEvent;
@@ -252,17 +273,19 @@ export const storage = {
     try {
       const userId = 1;
       
-      const result = await db.insert(waterEventsTable).values({
-        userId,
-        startTime: timestamp,
-        endTime: undefined, // Use undefined instead of null
-        volume: 0,
-        category: "",
-        anomaly: false
-      }).returning();
-      
-      activeWaterEvent = result[0];
-      return activeWaterEvent;
+      return await withRetry(async () => {
+        const result = await db.insert(waterEventsTable).values({
+          userId,
+          startTime: timestamp,
+          endTime: null, // Use null instead of undefined for database compatibility
+          volume: 0,
+          category: "",
+          anomaly: false
+        }).returning();
+        
+        activeWaterEvent = result[0];
+        return activeWaterEvent;
+      });
     } catch (error) {
       console.error('Error starting water event:', error);
       
@@ -284,15 +307,18 @@ export const storage = {
   updateActiveWaterEvent: async (timestamp: Date, volume: number) => {
     try {
       if (activeWaterEvent) {
-        const result = await db.update(waterEventsTable)
-          .set({
-            endTime: timestamp,
-            volume: activeWaterEvent.volume + volume
-          })
-          .where(eq(waterEventsTable.id, activeWaterEvent.id))
-          .returning();
-        
-        activeWaterEvent = result[0];
+        return await withRetry(async () => {
+          const result = await db.update(waterEventsTable)
+            .set({
+              endTime: timestamp,
+              volume: activeWaterEvent.volume + volume
+            })
+            .where(eq(waterEventsTable.id, activeWaterEvent.id))
+            .returning();
+          
+          activeWaterEvent = result[0];
+          return activeWaterEvent;
+        });
       }
       
       return activeWaterEvent;
@@ -312,13 +338,15 @@ export const storage = {
   completeWaterEvent: async (waterEvent: any) => {
     try {
       if (activeWaterEvent) {
-        const result = await db.update(waterEventsTable)
-          .set(waterEvent)
-          .where(eq(waterEventsTable.id, activeWaterEvent.id))
-          .returning();
-        
-        activeWaterEvent = null;
-        return result[0];
+        return await withRetry(async () => {
+          const result = await db.update(waterEventsTable)
+            .set(waterEvent)
+            .where(eq(waterEventsTable.id, activeWaterEvent.id))
+            .returning();
+          
+          activeWaterEvent = null;
+          return result[0];
+        });
       }
       
       return null;
@@ -332,8 +360,10 @@ export const storage = {
   cancelActiveWaterEvent: async () => {
     try {
       if (activeWaterEvent) {
-        await db.delete(waterEventsTable)
-          .where(eq(waterEventsTable.id, activeWaterEvent.id));
+        await withRetry(async () => {
+          await db.delete(waterEventsTable)
+            .where(eq(waterEventsTable.id, activeWaterEvent.id));
+        });
       }
       
       activeWaterEvent = null;
@@ -348,11 +378,13 @@ export const storage = {
   // User settings
   getUserSettings: async (userId: number) => {
     try {
-      const settings = await db.select()
-        .from(settingsTable)
-        .where(eq(settingsTable.userId, userId));
-      
-      return settings.length > 0 ? settings[0] : null;
+      return await withRetry(async () => {
+        const settings = await db.select()
+          .from(settingsTable)
+          .where(eq(settingsTable.userId, userId));
+        
+        return settings.length > 0 ? settings[0] : null;
+      });
     } catch (error) {
       console.error('Error fetching user settings:', error);
       return { ...defaultSettings, userId };
@@ -361,17 +393,19 @@ export const storage = {
   
   createDefaultSettings: async (userId: number) => {
     try {
-      const result = await db.insert(settingsTable).values({
-        userId,
-        dataRetention: '90',
-        storeRawData: true,
-        allowAiAnalysis: true,
-        shareAnonymizedData: true,
-        shareWithUtility: false,
-        participateInCommunity: false
-      }).returning();
-      
-      return result[0];
+      return await withRetry(async () => {
+        const result = await db.insert(settingsTable).values({
+          userId,
+          dataRetention: '90',
+          storeRawData: true,
+          allowAiAnalysis: true,
+          shareAnonymizedData: true,
+          shareWithUtility: false,
+          participateInCommunity: false
+        }).returning();
+        
+        return result[0];
+      });
     } catch (error) {
       console.error('Error creating default settings:', error);
       return { ...defaultSettings, userId };
@@ -380,12 +414,14 @@ export const storage = {
   
   updateUserSettings: async (userId: number, settings: Partial<UserSettings>) => {
     try {
-      const result = await db.update(settingsTable)
-        .set(settings)
-        .where(eq(settingsTable.userId, userId))
-        .returning();
-      
-      return result[0];
+      return await withRetry(async () => {
+        const result = await db.update(settingsTable)
+          .set(settings)
+          .where(eq(settingsTable.userId, userId))
+          .returning();
+        
+        return result[0];
+      });
     } catch (error) {
       console.error('Error updating user settings:', error);
       return { ...defaultSettings, ...settings, userId };
@@ -394,9 +430,11 @@ export const storage = {
   
   deleteAllUserData: async (userId: number) => {
     try {
-      await db.delete(waterReadingsTable).where(eq(waterReadingsTable.userId, userId));
-      await db.delete(waterEventsTable).where(eq(waterEventsTable.userId, userId));
-      await db.delete(settingsTable).where(eq(settingsTable.userId, userId));
+      await withRetry(async () => {
+        await db.delete(waterReadingsTable).where(eq(waterReadingsTable.userId, userId));
+        await db.delete(waterEventsTable).where(eq(waterEventsTable.userId, userId));
+        await db.delete(settingsTable).where(eq(settingsTable.userId, userId));
+      });
       
       return true;
     } catch (error) {
@@ -445,8 +483,10 @@ async function loadWaterEventsFromDB(): Promise<WaterEvent[]> {
     // Default user ID
     const userId = 1;
     
-    // Get events from database
-    const dbEvents = await db.select().from(waterEventsTable).where(eq(waterEventsTable.userId, userId));
+    // Get events from database with retry
+    const dbEvents = await withRetry(async () => {
+      return await db.select().from(waterEventsTable).where(eq(waterEventsTable.userId, userId));
+    });
     
     // Format events for frontend
     const formattedEvents = dbEvents.map(event => ({
@@ -470,8 +510,15 @@ async function loadWaterEventsFromDB(): Promise<WaterEvent[]> {
 
 // Export function to load water events
 export async function loadWaterEvents(): Promise<WaterEvent[]> {
-  const events = await loadWaterEventsFromDB();
-  return events.length > 0 ? events : sampleWaterEvents;
+  try {
+    console.log('Attempting to load water events from database...');
+    const events = await loadWaterEventsFromDB();
+    console.log(`Successfully loaded ${events.length} water events`);
+    return events.length > 0 ? events : sampleWaterEvents;
+  } catch (error) {
+    console.error('Failed to load water events:', error);
+    return sampleWaterEvents;
+  }
 }
 
 // Variable to store cached water events
@@ -481,6 +528,10 @@ let waterEvents: WaterEvent[] = [];
 loadWaterEvents().then(events => {
   waterEvents = events;
   console.log(`Initialized ${waterEvents.length} water events`);
+}).catch(error => {
+  console.error('Error initializing water events:', error);
+  waterEvents = sampleWaterEvents;
+  console.log('Using sample water events as fallback');
 });
 
 // Export water events
