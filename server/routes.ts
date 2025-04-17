@@ -1,9 +1,12 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { waterEvents, loadWaterEvents } from "./storage";
+import { waterEvents, loadWaterEvents, storage } from "./storage";
 import OpenAI from "openai";
 import { z } from "zod";
 import { insertWaterReadingSchema, insertWaterEventSchema } from "@shared/schema";
+import { db } from "./db";
+import { waterReadings as waterReadingsTable } from "@shared/schema";
+import { count } from "drizzle-orm";
 
 // Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
@@ -11,6 +14,41 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
 export async function registerRoutes(app: Express): Promise<Server> {
   // API Routes
   // ========================================================================
+  
+  // Database connection test endpoint
+  app.get("/api/db-test", async (req, res) => {
+    try {
+      console.log("Testing database connection...");
+      console.log("Database URL:", process.env.PRODUCTION_DATABASE_URL ? "Set" : "Not set");
+      
+      // Get count of water readings
+      const result = await db.select({ count: count() }).from(waterReadingsTable);
+      const readingsCount = result[0]?.count || 0;
+      
+      // Try to get a few sample readings
+      const sampleReadings = await db.select().from(waterReadingsTable).limit(5);
+      
+      res.json({
+        success: true,
+        message: "Database connection successful",
+        environment: process.env.NODE_ENV,
+        readingsCount,
+        sampleReadings,
+        dbConfig: {
+          usingNeon: process.env.PRODUCTION_DATABASE_URL ? true : false,
+          hasReadings: readingsCount > 0
+        }
+      });
+    } catch (error: any) {
+      console.error("Database connection test failed:", error);
+      res.status(500).json({
+        success: false,
+        message: "Database connection failed",
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
+  });
   
   // Water Readings
   // ------------------------------------------------------------------------
