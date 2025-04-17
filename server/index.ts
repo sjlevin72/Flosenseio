@@ -11,6 +11,7 @@ app.use(express.urlencoded({ extended: false }));
 // Setup authentication middleware
 setupAuth(app);
 
+// Add logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -44,12 +45,13 @@ app.use((req, res, next) => {
 (async () => {
   const server = await registerRoutes(app);
 
+  // Global error handler
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Server error:', err);
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    throw err;
   });
 
   // importantly only setup vite in development and after
@@ -69,6 +71,8 @@ app.use((req, res, next) => {
     port: PORT,
     host: "127.0.0.1"
   }, () => {
-    log(`serving on port ${PORT}`);
+    log(`Server running at http://127.0.0.1:${PORT}`);
+    log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    log(`Database: ${process.env.NEON_DATABASE_URL ? 'Neon PostgreSQL' : 'Local PostgreSQL'}`);
   });
 })();
