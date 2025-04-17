@@ -1,9 +1,11 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { waterEvents, loadWaterEvents } from "./storage";
+import { db } from "./db";
+import { waterEvents as waterEventsTable, waterReadings, users, settings } from "@shared/schema";
 import OpenAI from "openai";
 import { z } from "zod";
 import { insertWaterReadingSchema, insertWaterEventSchema } from "@shared/schema";
+import { eq, and, gte, lte } from "drizzle-orm";
 
 // Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "" });
@@ -12,16 +14,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // API Routes
   // ========================================================================
   
+  // Middleware to check if user is authenticated
+  const isAuthenticated = (req: any, res: any, next: any) => {
+    if (!req.session.userId) {
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    next();
+  };
+
+  // Apply authentication middleware to all routes
+  app.use(isAuthenticated);
+
   // Water Readings
   // ------------------------------------------------------------------------
   
   // Get all readings within a time range
-  app.get("/api/water/readings", async (req, res) => {
+  app.get("/api/water/readings", async (req: any, res: any) => {
     try {
+      const userId = req.session.userId;
+      
       const startTime = req.query.startTime ? new Date(req.query.startTime as string) : undefined;
       const endTime = req.query.endTime ? new Date(req.query.endTime as string) : undefined;
       
-      const readings = await storage.getWaterReadings(startTime, endTime);
+      let query = db.select().from(waterReadings).where(eq(waterReadings.userId, userId));
+      
+      if (startTime) {
+        query = query.where(gte(waterReadings.timestamp, startTime));
+      }
+      
+      if (endTime) {
+        query = query.where(lte(waterReadings.timestamp, endTime));
+      }
+      
+      const readings = await query;
       res.json(readings);
     } catch (error) {
       console.error("Error fetching water readings:", error);
@@ -30,13 +55,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Add a new water reading
-  app.post("/api/water/readings", async (req, res) => {
+  app.post("/api/water/readings", async (req: any, res: any) => {
     try {
+      const userId = req.session.userId;
       const validatedData = insertWaterReadingSchema.parse(req.body);
-      const reading = await storage.addWaterReading({
+      
+      const result = await db.insert(waterReadings).values({
+        userId,
         timestamp: new Date(validatedData.timestamp),
         value: validatedData.value
-      });
+      }).returning();
+      
+      const reading = result[0];
       
       // Process readings to detect events
       await processNewReading(reading);
@@ -54,19 +84,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   // Water Events
   // ------------------------------------------------------------------------
-  // Get water events (minimal, spreadsheet-based)
-  app.get("/api/water-events", (req, res) => {
-    // Reload data from Excel file each time the endpoint is called
-    const freshWaterEvents = loadWaterEvents();
-    res.json(freshWaterEvents);
+  // Get water events (from database)
+  app.get("/api/water-events", async (req: any, res: any) => {
+    try {
+      const userId = req.session.userId;
+      
+      // Get events from database
+      const dbEvents = await db.select().from(waterEventsTable).where(eq(waterEventsTable.userId, userId));
+      
+      // Format events for frontend
+      const formattedEvents = dbEvents.map(event => ({
+        eventNo: event.id,
+        startedAt: event.startTime.toLocaleString('en-GB'),
+        finishedAt: event.endTime.toLocaleString('en-GB'),
+        volume: event.volume / 1000, // Convert to liters
+        duration: event.duration || 0,
+        category: event.category,
+        dayOfWeek: event.startTime.toLocaleDateString('en-GB', { weekday: 'short' })
+      }));
+      
+      res.json(formattedEvents);
+    } catch (error) {
+      console.error("Error fetching water events:", error);
+      res.status(500).json({ message: "Failed to fetch water events" });
+    }
   });
   
   // Water Usage Dashboard Data
   // ------------------------------------------------------------------------
   
   // Get aggregated water usage data for dashboard
-  app.get("/api/water/usage", async (req, res) => {
+  app.get("/api/water/usage", async (req: any, res: any) => {
     try {
+      const userId = req.session.userId;
       const timeRange = req.query.timeRange as string || "week";
       
       // Calculate date range based on timeRange
@@ -91,8 +141,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Get readings and events within the time range
-      const readings = await storage.getWaterReadings(startDate, endDate);
-      const events = waterEvents;
+      const readings = await db.select().from(waterReadings).where(and(eq(waterReadings.userId, userId), gte(waterReadings.timestamp, startDate), lte(waterReadings.timestamp, endDate)));
+      const events = await db.select().from(waterEventsTable).where(and(eq(waterEventsTable.userId, userId), gte(waterEventsTable.startTime, startDate), lte(waterEventsTable.endTime, endDate)));
       
       // Calculate total usage
       const totalUsageML = readings.reduce((sum, reading) => sum + reading.value, 0);
@@ -117,7 +167,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           break;
       }
       
-      const prevReadings = await storage.getWaterReadings(prevStartDate, prevEndDate);
+      const prevReadings = await db.select().from(waterReadings).where(and(eq(waterReadings.userId, userId), gte(waterReadings.timestamp, prevStartDate), lte(waterReadings.timestamp, prevEndDate)));
       const prevTotalUsageML = prevReadings.reduce((sum, reading) => sum + reading.value, 0);
       
       let usageComparison = 0;
@@ -303,7 +353,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ------------------------------------------------------------------------
   
   // Categorize a water event
-  app.post("/api/ai/categorize", async (req, res) => {
+  app.post("/api/ai/categorize", async (req: any, res: any) => {
     try {
       const { flowData } = req.body;
       
@@ -320,7 +370,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Generate recommendations
-  app.post("/api/ai/recommendations", async (req, res) => {
+  app.post("/api/ai/recommendations", async (req: any, res: any) => {
     try {
       const { usageData } = req.body;
       
@@ -342,7 +392,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Detect anomalies
-  app.post("/api/ai/anomalies", async (req, res) => {
+  app.post("/api/ai/anomalies", async (req: any, res: any) => {
     try {
       const { flowData } = req.body;
       
@@ -359,7 +409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Analyze event chains
-  app.post("/api/ai/analyze-chain", async (req, res) => {
+  app.post("/api/ai/analyze-chain", async (req: any, res: any) => {
     try {
       const { events } = req.body;
       
@@ -379,32 +429,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ------------------------------------------------------------------------
   
   // Get user settings
-  app.get("/api/settings", async (req, res) => {
+  app.get("/api/settings", async (req: any, res: any) => {
     try {
-      // For now, we'll just return the first user's settings since we don't have authentication
-      const userId = 1;
-      let settings = await storage.getUserSettings(userId);
+      const userId = req.session.userId;
       
-      // If no settings exist, create default ones
-      if (!settings) {
-        settings = await storage.createDefaultSettings(userId);
-      }
-      
-      res.json(settings);
+      // Get settings from database
+      const result = await db
+        .select()
+        .from(settings)
+        .where(eq(settings.userId, userId));
+
+      const userSettingsData = result[0] || { userId, dataRetention: 90, shareAnonymousData: false };
+
+      res.json(userSettingsData);
     } catch (error) {
-      console.error("Error fetching settings:", error);
+      console.error("Error getting user settings:", error);
       res.status(500).json({ message: "Failed to fetch settings" });
     }
   });
   
   // Update settings
-  app.put("/api/settings", async (req, res) => {
+  app.put("/api/settings", async (req: any, res: any) => {
     try {
-      // For now, we'll just update the first user's settings
-      const userId = 1;
-      const updatedSettings = await storage.updateUserSettings(userId, req.body);
+      const userId = req.session.userId;
+      const updatedSettings = await db.update(settings).set(req.body).where(eq(settings.userId, userId)).returning();
       
-      res.json(updatedSettings);
+      res.json(updatedSettings[0]);
     } catch (error) {
       console.error("Error updating settings:", error);
       res.status(500).json({ message: "Failed to update settings" });
@@ -412,12 +462,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Reset to default settings
-  app.post("/api/settings/reset", async (req, res) => {
+  app.post("/api/settings/reset", async (req: any, res: any) => {
     try {
-      const userId = 1;
-      const defaultSettings = await storage.createDefaultSettings(userId);
+      const userId = req.session.userId;
+      const defaultSettings = await db.insert(settings).values({
+        userId,
+        dataRetention: 90,
+        shareAnonymousData: false
+      }).onConflictDoUpdate({
+        target: settings.userId,
+        set: { dataRetention: 90, shareAnonymousData: false }
+      }).returning();
       
-      res.json(defaultSettings);
+      res.json(defaultSettings[0]);
     } catch (error) {
       console.error("Error resetting settings:", error);
       res.status(500).json({ message: "Failed to reset settings" });
@@ -425,10 +482,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Delete all user data
-  app.delete("/api/user/data", async (req, res) => {
+  app.delete("/api/user/data", async (req: any, res: any) => {
     try {
-      const userId = 1;
-      await storage.deleteAllUserData(userId);
+      const userId = req.session.userId;
+      await db.delete(waterReadings).where(eq(waterReadings.userId, userId));
+      await db.delete(waterEventsTable).where(eq(waterEventsTable.userId, userId));
+      await db.delete(settings).where(eq(settings.userId, userId));
       
       res.json({ message: "All user data deleted successfully" });
     } catch (error) {
@@ -442,11 +501,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ========================================================================
   
   // Process new readings to detect water events
-  async function processNewReading(reading) {
+  async function processNewReading(reading: any) {
     try {
       // Get recent readings to detect events
       const fiveMinutesAgo = new Date(new Date().getTime() - 5 * 60 * 1000);
-      const recentReadings = await storage.getWaterReadings(fiveMinutesAgo);
+      const recentReadings = await db.select().from(waterReadings).where(and(eq(waterReadings.userId, reading.userId), gte(waterReadings.timestamp, fiveMinutesAgo)));
       
       // Simple event detection logic
       // In a real app, this would be more sophisticated
@@ -455,30 +514,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // If flow is detected (> 67ml)
       if (currentReading > 67) {
         // Check if we're already tracking an active event
-        const activeEvent = await storage.getActiveWaterEvent();
+        const activeEvent = await db.select().from(waterEventsTable).where(and(eq(waterEventsTable.userId, reading.userId), eq(waterEventsTable.endTime, null)));
         
-        if (!activeEvent) {
+        if (!activeEvent || activeEvent.length === 0) {
           // Start a new event
-          await storage.startWaterEvent(reading.timestamp);
+          await db.insert(waterEventsTable).values({
+            userId: reading.userId,
+            startTime: reading.timestamp,
+            endTime: null,
+            volume: 0,
+            peakFlowRate: 0,
+            avgFlowRate: 0,
+            category: "",
+            anomaly: false
+          });
         } else {
           // Update the end time of the active event
-          await storage.updateActiveWaterEvent(reading.timestamp, currentReading);
+          await db.update(waterEventsTable).set({ endTime: reading.timestamp, volume: activeEvent[0].volume + currentReading }).where(eq(waterEventsTable.id, activeEvent[0].id));
         }
       } else if (currentReading <= 67) {
         // Flow has stopped, check if we need to end an event
-        const activeEvent = await storage.getActiveWaterEvent();
+        const activeEvent = await db.select().from(waterEventsTable).where(and(eq(waterEventsTable.userId, reading.userId), eq(waterEventsTable.endTime, null)));
         
-        if (activeEvent) {
+        if (activeEvent && activeEvent.length > 0) {
           // End the active event
-          const flowData = await storage.getWaterReadingsBetween(
-            activeEvent.startTime,
-            reading.timestamp
-          );
+          const flowData = await db.select().from(waterReadings).where(and(eq(waterReadings.userId, reading.userId), gte(waterReadings.timestamp, activeEvent[0].startTime), lte(waterReadings.timestamp, reading.timestamp)));
           
           // Only end events that have at least 3 readings
           if (flowData.length >= 3) {
             // Calculate event stats
-            const durationMs = new Date(reading.timestamp).getTime() - new Date(activeEvent.startTime).getTime();
+            const durationMs = new Date(reading.timestamp).getTime() - new Date(activeEvent[0].startTime).getTime();
             const durationSeconds = Math.round(durationMs / 1000);
             
             // Calculate total volume
@@ -500,7 +565,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             // Create the completed event
             const waterEvent = {
-              startTime: activeEvent.startTime,
+              startTime: activeEvent[0].startTime,
               endTime: reading.timestamp,
               duration: durationSeconds,
               volume: totalVolume,
@@ -519,10 +584,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             
             // Save the event
-            await storage.completeWaterEvent(waterEvent);
+            await db.update(waterEventsTable).set(waterEvent).where(eq(waterEventsTable.id, activeEvent[0].id));
           } else {
             // Not enough readings, discard this event
-            await storage.cancelActiveWaterEvent();
+            await db.delete(waterEventsTable).where(eq(waterEventsTable.id, activeEvent[0].id));
           }
         }
       }
@@ -532,7 +597,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
   
   // Use OpenAI to categorize water events based on flow profile
-  async function categorizeWaterEvent(flowData) {
+  async function categorizeWaterEvent(flowData: any) {
     try {
       // Default response if AI fails
       const defaultResponse = {
@@ -598,7 +663,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
   
   // Use OpenAI to detect anomalies in water usage
-  async function detectAnomalies(flowData) {
+  async function detectAnomalies(flowData: any) {
     try {
       // Default response if AI fails
       const defaultResponse = {
@@ -659,7 +724,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messages: [
           {
             role: "system",
-            content: `You are a water usage anomaly detector. You analyze flow profiles to identify unusual patterns that might indicate problems like leaks, inefficient fixtures, or unusual usage patterns.
+            content: `You analyze water usage events to identify unusual patterns that might indicate problems like leaks, inefficient fixtures, or unusual usage patterns.
             
             Common anomalies include:
             - Continuous low flow (potential leak)
@@ -692,7 +757,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
   
   // Use OpenAI to generate personalized recommendations
-  async function generateRecommendations(events, totalUsageML, usageComparison) {
+  async function generateRecommendations(events: any, totalUsageML: number, usageComparison: number) {
     try {
       // Default recommendations if AI fails
       const defaultRecommendations = [
@@ -807,7 +872,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
   
   // Analyze if multiple events form a logical chain
-  async function analyzeEventChain(events) {
+  async function analyzeEventChain(events: any) {
     try {
       // Default response if AI fails
       const defaultResponse = {
