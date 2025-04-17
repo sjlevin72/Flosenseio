@@ -170,8 +170,7 @@ async function setupDatabase() {
         allow_ai_analysis BOOLEAN DEFAULT TRUE,
         share_anonymized_data BOOLEAN DEFAULT TRUE,
         share_with_utility BOOLEAN DEFAULT FALSE,
-        participate_in_community BOOLEAN DEFAULT FALSE,
-        CONSTRAINT settings_user_id_key UNIQUE (user_id)
+        participate_in_community BOOLEAN DEFAULT FALSE
       );
       
       CREATE TABLE IF NOT EXISTS water_readings (
@@ -213,37 +212,19 @@ async function setupDatabase() {
     
     // Create settings for the user
     console.log('Creating user settings...');
-    // First check if settings already exist for this user
-    const settingsResult = await client.query(
-      'SELECT id FROM settings WHERE user_id = $1',
-      [userId]
+    await client.query(
+      `INSERT INTO settings(user_id, data_retention, store_raw_data, allow_ai_analysis, 
+                           share_anonymized_data, share_with_utility, participate_in_community)
+       VALUES($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (user_id) DO UPDATE SET
+         data_retention = $2,
+         store_raw_data = $3,
+         allow_ai_analysis = $4,
+         share_anonymized_data = $5,
+         share_with_utility = $6,
+         participate_in_community = $7`,
+      [userId, '90', true, true, true, false, false]
     );
-    
-    if (settingsResult.rows.length > 0) {
-      // Update existing settings
-      await client.query(
-        `UPDATE settings SET
-          data_retention = $2,
-          store_raw_data = $3,
-          allow_ai_analysis = $4,
-          share_anonymized_data = $5,
-          share_with_utility = $6,
-          participate_in_community = $7
-         WHERE user_id = $1`,
-        [userId, '90', true, true, true, false, false]
-      );
-      console.log('Updated existing settings for user');
-    } else {
-      // Insert new settings
-      await client.query(
-        `INSERT INTO settings(
-          user_id, data_retention, store_raw_data, allow_ai_analysis, 
-          share_anonymized_data, share_with_utility, participate_in_community
-        ) VALUES($1, $2, $3, $4, $5, $6, $7)`,
-        [userId, '90', true, true, true, false, false]
-      );
-      console.log('Created new settings for user');
-    }
     
     // Generate water readings
     const waterReadings = generateSampleWaterData();
